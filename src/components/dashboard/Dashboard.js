@@ -234,11 +234,9 @@ const baseContacts = [
   }
 ];
 
-const getProfileStorageKey = (user) => {
+const getUserKey = (user) => {
   if (!user) return null;
-  const id = user.uid || user.email;
-  if (!id) return null;
-  return `profileImage_${id}`;
+  return user.uid || user.email || null;
 };
 
 const Dashboard = () => {
@@ -246,17 +244,12 @@ const Dashboard = () => {
   const [selectedSection, setSelectedSection] = useState('home');
   const [loading] = useState(false);
 
-  const [profileImage, setProfileImage] = useState(() => {
-    if (typeof window === 'undefined') return null;
-    const key = getProfileStorageKey(currentUser);
-    if (!key) return null;
-    return localStorage.getItem(key) || null;
-  });
+  const [profileImage, setProfileImage] = useState(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
 
   const [selectedContact, setSelectedContact] = useState(null);
   const [message, setMessage] = useState('');
   const [sentStatus, setSentStatus] = useState(null);
-
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
 
@@ -270,38 +263,83 @@ const Dashboard = () => {
     try {
       const stored = localStorage.getItem('conversations');
       return stored ? JSON.parse(stored) : {};
-    } catch (e) {
-      console.error('Di ma-load ang conversations gikan sa localStorage:', e);
+    } catch {
       return {};
     }
   });
 
-  const [profileData, setProfileData] = useState(() => {
+  const [profileData, setProfileData] = useState({
+    name: currentUser?.displayName || '',
+    email: currentUser?.email || '',
+    bio: '',
+    birthday: '',
+    school: '',
+    phone: ''
+  });
+
+  useEffect(() => {
+    const key = getUserKey(currentUser);
+
+    if (!key) {
+      setProfileData({
+        name: '',
+        email: '',
+        bio: '',
+        birthday: '',
+        school: '',
+        phone: ''
+      });
+      setProfileImage(null);
+      setProfileLoaded(true);
+      return;
+    }
+
     const base = {
-      name: (currentUser && currentUser.displayName) || '',
-      email: (currentUser && currentUser.email) || '',
+      name: currentUser?.displayName || '',
+      email: currentUser?.email || '',
       bio: '',
       birthday: '',
       school: '',
       phone: ''
     };
-    if (typeof window === 'undefined') return base;
-    try {
-      const stored = localStorage.getItem('profileData');
-      return stored ? { ...base, ...JSON.parse(stored) } : base;
-    } catch (e) {
-      return base;
+
+    if (typeof window === 'undefined') {
+      setProfileData(base);
+      setProfileLoaded(true);
+      return;
     }
-  });
+
+    try {
+      const profileKey = `profileData_${key}`;
+      const imgKey = `profileImage_${key}`;
+
+      const storedProfile = localStorage.getItem(profileKey);
+      const storedImg = localStorage.getItem(imgKey);
+
+      setProfileData(storedProfile ? { ...base, ...JSON.parse(storedProfile) } : base);
+      setProfileImage(storedImg || null);
+    } catch {
+      setProfileData(base);
+      setProfileImage(null);
+    } finally {
+      setProfileLoaded(true);
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    if (!profileLoaded) return;
+
+    const key = getUserKey(currentUser);
+    if (!key) return;
+
     try {
-      localStorage.setItem('profileData', JSON.stringify(profileData));
+      const profileKey = `profileData_${key}`;
+      localStorage.setItem(profileKey, JSON.stringify(profileData));
     } catch (e) {
       console.error('Unable to save profile data:', e);
     }
-  }, [profileData]);
+  }, [profileData, currentUser, profileLoaded]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -324,19 +362,23 @@ const Dashboard = () => {
     }
   }, [isDarkMode]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const key = getProfileStorageKey(currentUser);
-    if (!key) {
-      setProfileImage(null);
-      return;
-    }
-    const stored = localStorage.getItem(key);
-    setProfileImage(stored || null);
-  }, [currentUser]);
-
   const handleLogout = async () => {
     try {
+      if (typeof window !== 'undefined') {
+        const key = getUserKey(currentUser);
+        if (key) {
+          try {
+            const profileKey = `profileData_${key}`;
+            localStorage.setItem(profileKey, JSON.stringify(profileData));
+            if (profileImage) {
+              const imgKey = `profileImage_${key}`;
+              localStorage.setItem(imgKey, profileImage);
+            }
+          } catch (e) {
+            console.error('Failed to persist profile before logout:', e);
+          }
+        }
+      }
       await logout();
     } catch (error) {
       console.error('Logout failed:', error);
@@ -346,15 +388,16 @@ const Dashboard = () => {
   const handleProfileImageChange = (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
+    const key = getUserKey(currentUser);
+    if (!key) return;
+
     const reader = new FileReader();
     reader.onloadend = () => {
       if (typeof reader.result === 'string') {
         setProfileImage(reader.result);
         try {
-          const key = getProfileStorageKey(currentUser);
-          if (key) {
-            localStorage.setItem(key, reader.result);
-          }
+          const imgKey = `profileImage_${key}`;
+          localStorage.setItem(imgKey, reader.result);
         } catch (err) {
           console.error('Unable to save profile image to localStorage:', err);
         }
@@ -484,9 +527,8 @@ const Dashboard = () => {
     return (parts[0][0] || '').toUpperCase() + (parts[1][0] || '').toUpperCase();
   };
 
-  const displayName = profileData.name || (currentUser && currentUser.displayName) || 'Karla';
+  const displayName = profileData.name || currentUser?.displayName || 'Karla';
   const displayRole = userRole ? userRole.charAt(0).toUpperCase() + userRole.slice(1) : 'Member';
-
   const chatBg = isDarkMode ? 'bg-[#0b1220]' : 'bg-gray-50';
 
   return (
@@ -689,7 +731,7 @@ const Dashboard = () => {
                             <span className="font-medium">Email: </span>
                             <span>
                               {profileData.email ||
-                                (currentUser && currentUser.email) ||
+                                currentUser?.email ||
                                 'Not set'}
                             </span>
                           </div>
@@ -976,7 +1018,7 @@ const Dashboard = () => {
                           {selectedContact
                             ? selectedContact.email
                             : profileData.email ||
-                              (currentUser && currentUser.email) ||
+                              currentUser?.email ||
                               'john.paul@studentorg.com'}
                         </span>
                       </div>
