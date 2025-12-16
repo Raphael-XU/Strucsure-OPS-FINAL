@@ -1,26 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { 
-  collection, 
-  query, 
-  getDocs, 
-  doc, 
-  updateDoc, 
+import AddUserModal from './AddUserModal';
+import {
+  collection,
+  query,
+  getDocs,
+  doc,
+  updateDoc,
   deleteDoc,
-  orderBy 
+  setDoc,
+  orderBy
 } from 'firebase/firestore';
-import { db } from '../../firebase/config';
-import { 
-  Users, 
-  Shield, 
-  Settings, 
-  Edit, 
-  Trash2, 
-  Eye, 
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../../firebase/config';
+import {
+  Users,
+  Shield,
+  Settings,
+  Edit,
+  Trash2,
+  Eye,
   Search,
   Filter,
   Plus,
-  AlertTriangle
+  AlertTriangle,
+  FileText,
+  Activity,
+  Clock
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -33,10 +39,17 @@ const AdminPanel = () => {
   const [selectedUser, setSelectedUser] = useState(null);
   const [showUserModal, setShowUserModal] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
+  const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [systemLogs, setSystemLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [selectedTab, setSelectedTab] = useState('users');
 
   useEffect(() => {
     fetchUsers();
-  }, []);
+    if (selectedTab === 'logs') {
+      fetchSystemLogs();
+    }
+  }, [selectedTab]);
 
   const fetchUsers = async () => {
     try {
@@ -59,7 +72,7 @@ const AdminPanel = () => {
   const handleRoleChange = async (userId, newRole) => {
     try {
       await updateUserRole(userId, newRole);
-      setUsers(users.map(user => 
+      setUsers(users.map(user =>
         user.id === userId ? { ...user, role: newRole } : user
       ));
       toast.success('User role updated successfully');
@@ -74,6 +87,19 @@ const AdminPanel = () => {
       try {
         await deleteDoc(doc(db, 'users', userId));
         setUsers(users.filter(user => user.id !== userId));
+
+        // Log the deletion
+        const userToDelete = users.find(user => user.id === userId);
+        await setDoc(doc(db, 'systemLogs', `${userId}_${Date.now()}`), {
+          type: 'user_deleted',
+          action: `User ${userToDelete?.firstName} ${userToDelete?.lastName} (${userToDelete?.email}) deleted`,
+          userId: userId,
+          userEmail: userToDelete?.email,
+          changedBy: currentUser.uid,
+          changedByEmail: currentUser.email,
+          timestamp: new Date().toISOString()
+        });
+
         toast.success('User deleted successfully');
       } catch (error) {
         console.error('Error deleting user:', error);
@@ -82,10 +108,86 @@ const AdminPanel = () => {
     }
   };
 
+  const handleAddUser = async (userData) => {
+    try {
+      const createUserFunction = httpsCallable(functions, 'createUser');
+      const result = await createUserFunction(userData);
+      const newUser = result.data.user;
+      setUsers([...users, { ...newUser, id: newUser.uid }]);
+      toast.success('User created successfully');
+      setShowAddUserModal(false);
+    } catch (error) {
+      console.error('Error creating user:', error);
+      toast.error('Failed to create user');
+    }
+  };
+
+  const fetchSystemLogs = async () => {
+    try {
+      setLogsLoading(true);
+      const logs = [];
+
+      // Fetch role audit logs
+      try {
+        const roleAuditQuery = query(collection(db, 'roleAudit'), orderBy('timestamp', 'desc'));
+        const roleAuditSnapshot = await getDocs(roleAuditQuery);
+        roleAuditSnapshot.docs.forEach(doc => {
+          const data = doc.data();
+          logs.push({
+            id: doc.id,
+            type: 'role_change',
+            action: `Role changed from ${data.oldRole || 'unknown'} to ${data.newRole}`,
+            userId: data.targetUserId,
+            changedBy: data.changedBy,
+            changedByEmail: data.changedByEmail,
+            timestamp: data.timestamp,
+            details: data
+          });
+        });
+      } catch (error) {
+        console.warn('Error fetching role audit logs:', error);
+      }
+
+      // Fetch system logs
+      try {
+        const systemLogsQuery = query(collection(db, 'systemLogs'), orderBy('timestamp', 'desc'));
+        const systemLogsSnapshot = await getDocs(systemLogsQuery);
+        systemLogsSnapshot.docs.forEach(doc => {
+          const data = doc.data();
+          logs.push({
+            id: doc.id,
+            type: data.type || 'system',
+            action: data.action || 'System event',
+            userId: data.userId,
+            userEmail: data.userEmail,
+            timestamp: data.timestamp,
+            details: data
+          });
+        });
+      } catch (error) {
+        console.warn('Error fetching system logs:', error);
+      }
+
+      // Sort all logs by timestamp (newest first)
+      logs.sort((a, b) => {
+        const timeA = a.timestamp?.toDate ? a.timestamp.toDate() : new Date(a.timestamp || 0);
+        const timeB = b.timestamp?.toDate ? b.timestamp.toDate() : new Date(b.timestamp || 0);
+        return timeB - timeA;
+      });
+
+      setSystemLogs(logs);
+    } catch (error) {
+      console.error('Error fetching system logs:', error);
+      toast.error('Failed to fetch system logs');
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
   const filteredUsers = users.filter(user => {
     const matchesSearch = user.firstName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         user.lastName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         user.email?.toLowerCase().includes(searchTerm.toLowerCase());
+                          user.lastName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          user.email?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesRole = roleFilter === 'all' || user.role === roleFilter;
     return matchesSearch && matchesRole;
   });
@@ -126,8 +228,44 @@ const AdminPanel = () => {
         </p>
       </div>
 
-      {/* Statistics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      {/* Navigation Tabs */}
+      <div className="mb-8">
+        <nav className="flex space-x-8 border-b border-gray-200">
+          <button
+            onClick={() => setSelectedTab('users')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              selectedTab === 'users'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <Users className="inline h-4 w-4 mr-2" />
+            Users
+          </button>
+          <button
+            onClick={() => {
+              setSelectedTab('logs');
+              if (systemLogs.length === 0) {
+                fetchSystemLogs();
+              }
+            }}
+            className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              selectedTab === 'logs'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <FileText className="inline h-4 w-4 mr-2" />
+            System Logs
+          </button>
+        </nav>
+      </div>
+
+      {/* Users Tab */}
+      {selectedTab === 'users' && (
+        <>
+          {/* Statistics Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center">
             <div className="p-2 bg-blue-100 rounded-lg">
@@ -188,7 +326,7 @@ const AdminPanel = () => {
         <div className="px-6 py-4 border-b border-gray-200">
           <h3 className="text-lg font-medium text-gray-900">User Management</h3>
         </div>
-        
+
         <div className="px-6 py-4">
           <div className="flex flex-col sm:flex-row gap-4">
             {/* Search */}
@@ -220,7 +358,10 @@ const AdminPanel = () => {
             </div>
 
             {/* Add User Button */}
-            <button className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+            <button
+              onClick={() => setShowAddUserModal(true)}
+              className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
               <Plus className="h-4 w-4 mr-2" />
               Add User
             </button>
@@ -349,7 +490,7 @@ const AdminPanel = () => {
                   ×
                 </button>
               </div>
-              
+
               <div className="space-y-3">
                 <div>
                   <label className="text-sm font-medium text-gray-700">Name</label>
@@ -390,6 +531,161 @@ const AdminPanel = () => {
                   Close
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      </>
+
+      )}
+
+        {/* Add User Modal */}
+        {showAddUserModal && (
+          <AddUserModal
+            onClose={() => setShowAddUserModal(false)}
+            onSubmit={handleAddUser}
+          />
+        )}
+
+      {/* System Logs Tab */}
+      {selectedTab === 'logs' && (
+        <div className="space-y-6">
+          {/* Statistics Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="flex items-center">
+                <div className="p-2 bg-blue-100 rounded-lg">
+                  <FileText className="h-6 w-6 text-blue-600" />
+                </div>
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-gray-600">Total Logs</p>
+                  <p className="text-2xl font-semibold text-gray-900">{systemLogs.length}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="flex items-center">
+                <div className="p-2 bg-yellow-100 rounded-lg">
+                  <Activity className="h-6 w-6 text-yellow-600" />
+                </div>
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-gray-600">Role Changes</p>
+                  <p className="text-2xl font-semibold text-gray-900">
+                    {systemLogs.filter(log => log.type === 'role_change').length}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="flex items-center">
+                <div className="p-2 bg-green-100 rounded-lg">
+                  <Clock className="h-6 w-6 text-green-600" />
+                </div>
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-gray-600">System Events</p>
+                  <p className="text-2xl font-semibold text-gray-900">
+                    {systemLogs.filter(log => log.type === 'system').length}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* System Logs Table */}
+          <div className="bg-white shadow rounded-lg overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-medium text-gray-900">System Activity Log</h3>
+                <button
+                  onClick={fetchSystemLogs}
+                  disabled={logsLoading}
+                  className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
+                >
+                  <Activity className="h-4 w-4 mr-2" />
+                  Refresh
+                </button>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              {logsLoading ? (
+                <div className="text-center py-12">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+                  <p className="mt-4 text-sm text-gray-500">Loading logs...</p>
+                </div>
+              ) : systemLogs.length === 0 ? (
+                <div className="text-center py-12">
+                  <FileText className="mx-auto h-12 w-12 text-gray-400" />
+                  <h3 className="mt-2 text-sm font-medium text-gray-900">No logs found</h3>
+                  <p className="mt-1 text-sm text-gray-500">
+                    System activity logs will appear here.
+                  </p>
+                </div>
+              ) : (
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Timestamp
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Type
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Action
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        User
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Details
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {systemLogs.map((log) => {
+                      const timestamp = log.timestamp?.toDate
+                        ? log.timestamp.toDate()
+                        : (log.timestamp ? new Date(log.timestamp) : new Date());
+
+                      return (
+                        <tr key={log.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {timestamp.toLocaleString()}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              log.type === 'role_change'
+                                ? 'bg-yellow-100 text-yellow-800'
+                                : 'bg-blue-100 text-blue-800'
+                            }`}>
+                              {log.type === 'role_change' ? 'Role Change' : 'System Event'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-900">
+                            {log.action}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {log.changedByEmail || log.userEmail || 'System'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            <button
+                              onClick={() => {
+                                setSelectedUser({ ...log.details, id: log.id });
+                                setShowUserModal(true);
+                              }}
+                              className="text-blue-600 hover:text-blue-900"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
         </div>

@@ -46,7 +46,7 @@ service cloud.firestore {
         isAdmin() && 
         request.resource.data.role in ['member', 'executive', 'admin']
       );
-      allow delete: if false; // Never allow deletion of user documents
+      allow delete: if isAdmin(); // Only admins can delete user documents
     }
     
     // Activities collection - authenticated users can read all, write their own or if executive/admin
@@ -83,6 +83,11 @@ service cloud.firestore {
     
     // Role audit log - only admins can read/write (optional, for tracking changes)
     match /roleAudit/{auditId} {
+      allow read, write: if isAdmin();
+    }
+    
+    // System logs - only admins can read/write (for tracking all system events)
+    match /systemLogs/{logId} {
       allow read, write: if isAdmin();
     }
     

@@ -21,8 +21,8 @@ exports.setUserRole = functions.https.onCall(async (data, context) => {
   }
 
   // Check if user is admin
-  const callerToken = await admin.auth().getUser(context.auth.uid);
-  const callerRole = callerToken.customClaims?.role || 'member';
+  const callerDoc = await admin.firestore().collection('users').doc(context.auth.uid).get();
+  const callerRole = callerDoc.exists ? callerDoc.data().role : 'member';
   
   if (callerRole !== 'admin') {
     throw new functions.https.HttpsError(
@@ -91,8 +91,8 @@ exports.getUsers = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const callerToken = await admin.auth().getUser(context.auth.uid);
-  const callerRole = callerToken.customClaims?.role || 'member';
+  const callerDoc = await admin.firestore().collection('users').doc(context.auth.uid).get();
+  const callerRole = callerDoc.exists ? callerDoc.data().role : 'member';
   
   if (callerRole !== 'admin') {
     throw new functions.https.HttpsError('permission-denied', 'Only administrators can view all users.');
@@ -116,3 +116,122 @@ exports.getUsers = functions.https.onCall(async (data, context) => {
   }
 });
 
+/**
+ * Cloud Function to create a new user (admin only)
+ * This function creates a user in Firebase Auth and Firestore
+ *
+ * @param {Object} data - User data
+ * @param {string} data.email - User email
+ * @param {string} data.firstName - User first name
+ * @param {string} data.lastName - User last name
+ * @param {string} data.role - User role ('member', 'executive', or 'admin')
+ * @param {string} data.department - User department (optional)
+ * @param {string} data.location - User location (optional)
+ * @returns {Object} Created user data
+ */
+exports.createUser = functions.https.onCall(async (data, context) => {
+  // Check if user is authenticated
+  if (!context.auth) {
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'User must be authenticated to call this function.'
+    );
+  }
+
+  // Check if user is admin
+  const callerDoc = await admin.firestore().collection('users').doc(context.auth.uid).get();
+  const callerRole = callerDoc.exists ? callerDoc.data().role : 'member';
+
+  if (callerRole !== 'admin') {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'Only administrators can create users.'
+    );
+  }
+
+  // Validate input
+  const { email, firstName, lastName, role, department, location } = data;
+  if (!email || !firstName || !lastName || !role) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'Email, firstName, lastName, and role are required.'
+    );
+  }
+
+  const allowedRoles = ['member', 'executive', 'admin'];
+  if (!allowedRoles.includes(role)) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      `Role must be one of: ${allowedRoles.join(', ')}`
+    );
+  }
+
+  try {
+    // Generate a temporary password
+    const tempPassword = Math.random().toString(36).slice(-12) + 'Temp!';
+
+    // Create user in Firebase Auth
+    const userRecord = await admin.auth().createUser({
+      email: email,
+      password: tempPassword,
+      displayName: `${firstName} ${lastName}`,
+      emailVerified: false,
+    });
+
+    // Set custom claim for role
+    await admin.auth().setCustomUserClaims(userRecord.uid, { role });
+
+    // Create user document in Firestore
+    await admin.firestore().collection('users').doc(userRecord.uid).set({
+      uid: userRecord.uid,
+      email: email,
+      firstName: firstName,
+      lastName: lastName,
+      role: role,
+      department: department || '',
+      location: location || '',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      profileComplete: false
+    });
+
+    // Log the user creation for audit
+    await admin.firestore().collection('systemLogs').add({
+      type: 'user_created',
+      action: `User ${firstName} ${lastName} (${email}) created`,
+      userId: userRecord.uid,
+      userEmail: email,
+      changedBy: context.auth.uid,
+      changedByEmail: context.auth.token.email,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      details: {
+        firstName,
+        lastName,
+        role,
+        department,
+        location
+      }
+    });
+
+    return {
+      success: true,
+      user: {
+        uid: userRecord.uid,
+        email: email,
+        firstName: firstName,
+        lastName: lastName,
+        role: role,
+        department: department || '',
+        location: location || '',
+        createdAt: new Date().toISOString()
+      },
+      tempPassword: tempPassword // Return temp password so admin can share it
+    };
+  } catch (error) {
+    console.error('Error creating user:', error);
+    throw new functions.https.HttpsError(
+      'internal',
+      'Failed to create user.',
+      error.message
+    );
+  }
+});

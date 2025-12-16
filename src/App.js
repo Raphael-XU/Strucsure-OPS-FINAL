@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Login from './components/auth/Login';
@@ -8,6 +8,7 @@ import Dashboard from './components/dashboard/Dashboard';
 import MemberProfile from './components/members/MemberProfile';
 import AdminPanel from './components/admin/AdminPanel';
 import ExecutivePanel from './components/executive/ExecutivePanel';
+import LandingPage from './components/landing/LandingPage';
 import Navigation from './components/layout/Navigation';
 import './App.css';
 
@@ -34,53 +35,62 @@ const ProtectedRoute = ({ children, allowedRoles = [] }) => {
   return children;
 };
 
+function AppContent() {
+  const location = useLocation();
+  const hideNavigation = location.pathname === '/';
+
+  return (
+    <div className="App">
+      <Toaster position="top-right" />
+      {!hideNavigation && <Navigation />}
+      <main className="min-h-screen bg-gray-50">
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute>
+                <Dashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <MemberProfile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminPanel />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/executive"
+            element={
+              <ProtectedRoute allowedRoles={['admin', 'executive']}>
+                <ExecutivePanel />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/" element={<LandingPage />} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
 function App() {
   return (
     <AuthProvider>
       <Router>
-        <div className="App">
-          <Toaster position="top-right" />
-          <Navigation />
-          <main className="min-h-screen bg-gray-50">
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<Register />} />
-              <Route 
-                path="/dashboard" 
-                element={
-                  <ProtectedRoute>
-                    <Dashboard />
-                  </ProtectedRoute>
-                } 
-              />
-              <Route 
-                path="/profile" 
-                element={
-                  <ProtectedRoute>
-                    <MemberProfile />
-                  </ProtectedRoute>
-                } 
-              />
-              <Route 
-                path="/admin" 
-                element={
-                  <ProtectedRoute allowedRoles={['admin']}>
-                    <AdminPanel />
-                  </ProtectedRoute>
-                } 
-              />
-              <Route 
-                path="/executive" 
-                element={
-                  <ProtectedRoute allowedRoles={['admin', 'executive']}>
-                    <ExecutivePanel />
-                  </ProtectedRoute>
-                } 
-              />
-              <Route path="/" element={<Navigate to="/dashboard" />} />
-            </Routes>
-          </main>
-        </div>
+        <AppContent />
       </Router>
     </AuthProvider>
   );

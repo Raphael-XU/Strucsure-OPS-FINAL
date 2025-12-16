@@ -11,7 +11,8 @@ import {
   GithubAuthProvider
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, updateDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
+import { auth, db, functions } from '../firebase/config';
 
 const AuthContext = createContext();
 
@@ -179,25 +180,9 @@ export function AuthProvider({ children }) {
         throw new Error(`Invalid role. Must be one of: ${allowedRoles.join(', ')}`);
       }
 
-      // Update role in Firestore (Firestore rules will verify admin permission)
-      await updateDoc(doc(db, 'users', uid), {
-        role: newRole,
-        updatedAt: new Date().toISOString()
-      });
-
-      // Log the change (optional - for audit trail)
-      try {
-        await setDoc(doc(db, 'roleAudit', `${uid}_${Date.now()}`), {
-          targetUserId: uid,
-          changedBy: currentUser?.uid,
-          changedByEmail: currentUser?.email,
-          newRole: newRole,
-          timestamp: new Date().toISOString()
-        });
-      } catch (auditError) {
-        // Don't fail if audit logging fails
-        console.warn('Could not log role change:', auditError);
-      }
+      // Call the Cloud Function to update role
+      const setUserRoleFunction = httpsCallable(functions, 'setUserRole');
+      await setUserRoleFunction({ uid, role: newRole });
 
       // Update local state if updating own role
       if (uid === currentUser?.uid) {
